@@ -8,6 +8,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 concurrency:
   group: telegram-bot-instance
   cancel-in-progress: true
@@ -55,4 +58,13 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
-          python bot.py
+          timeout -s SIGINT 20400 python bot.py || true
+
+      - name: 7. Save User Stats to GitHub
+        if: always()
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add users_stats.json
+          git diff --staged --quiet || git commit -m "chore: update user stats [skip ci]"
+          git push
