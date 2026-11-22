@@ -46,6 +46,7 @@ BLOCKED_KEYWORDS = [
     "سكس", "إباحي", "اباحي", "نيك", "بورن", "شرموط", "قحبة", "عاري", "عارية", "للكبار فقط"
 ]
 
+# تسجيل الخروج من السيرفر الرسمي لتيليجرام للانتقال للسيرفر المحلي تلقائياً
 try:
     requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/logOut", timeout=10)
 except Exception:
@@ -53,7 +54,7 @@ except Exception:
 
 
 def get_base_ydl_opts():
-    """إعدادات لتجاوز تحقق يوتيوب بدون كوكيز عبر عملاء TV / Android VR / Embedded"""
+    """إعدادات yt-dlp مع دعم PO Token التلقائي وتدوير عملاء يوتيوب بدون كوكيز"""
     return {
         "quiet": True,
         "noplaylist": True,
@@ -62,10 +63,13 @@ def get_base_ydl_opts():
             "youtube": {
                 "player_client": ["tv", "android_vr", "web_embedded", "ios", "web"],
                 "player_skip": ["webpage", "configs"]
+            },
+            "youtubepot-bgutilhttp": {
+                "base_url": ["http://127.0.0.1:4416"]
             }
         },
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9"
         }
     }
@@ -751,5 +755,5 @@ def process_download(call):
 
 
 if __name__ == "__main__":
-    print("Bot is running without cookies (Multi-client bypass enabled)...")
+    print("Bot is running with PO Token Provider, Local Bot API (2GB), Quality Selector & Admin Panel...")
     bot.infinity_polling(skip_pending=True)
