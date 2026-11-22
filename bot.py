@@ -52,6 +52,25 @@ except Exception:
     pass
 
 
+def get_base_ydl_opts():
+    """إعدادات لتجاوز تحقق يوتيوب بدون كوكيز عبر عملاء TV / Android VR / Embedded"""
+    return {
+        "quiet": True,
+        "noplaylist": True,
+        "geo_bypass": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["tv", "android_vr", "web_embedded", "ios", "web"],
+                "player_skip": ["webpage", "configs"]
+            }
+        },
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+    }
+
+
 def generate_clean_sites_file():
     if os.path.exists(SITES_FILE):
         return SITES_FILE
@@ -137,7 +156,6 @@ def format_size(bytes_num):
 
 
 def extract_available_qualities(info):
-    """استخراج الجودات المتاحة للفيديو مرتبة من الأعلى للأقل مع الحجم التقريبي"""
     formats = info.get("formats") or []
     best_audio_size = 0
 
@@ -555,7 +573,7 @@ def handle_url(message):
     wait_msg = bot.reply_to(message, "🔍 جاري فحص الرابط واستخراج الجودات المتاحة...")
 
     try:
-        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True}) as ydl:
+        with yt_dlp.YoutubeDL(get_base_ydl_opts()) as ydl:
             info = ydl.extract_info(url, download=False)
 
         if is_nsfw_metadata(info):
@@ -599,7 +617,7 @@ def handle_url(message):
         )
 
     except Exception as e:
-        safe_err = html.escape(str(e)[:200])
+        safe_err = html.escape(str(e)[:250])
         bot.edit_message_text(
             f"❌ تعذر جلب بيانات الرابط:\n<code>{safe_err}</code>",
             chat_id=message.chat.id,
@@ -629,22 +647,21 @@ def process_download(call):
 
     file_id = str(uuid.uuid4())[:8]
     output_template = os.path.join(DOWNLOAD_DIR, f"{file_id}.%(ext)s")
+    ydl_opts = get_base_ydl_opts()
 
     if choice == "audio":
-        ydl_opts = {
+        ydl_opts.update({
             "format": "bestaudio/best",
             "format_sort": ["abr", "asr"],
             "outtmpl": output_template,
-            "noplaylist": True,
-            "quiet": True,
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
                 "preferredquality": "320",
             }],
-        }
+        })
     elif choice == "best":
-        ydl_opts = {
+        ydl_opts.update({
             "format": "bv*+ba/b",
             "format_sort": ["res", "fps", "vbr", "abr"],
             "outtmpl": output_template,
@@ -652,11 +669,9 @@ def process_download(call):
             "postprocessor_args": {
                 "merger": ["-c:v", "copy", "-c:a", "aac", "-b:a", "320k"]
             },
-            "noplaylist": True,
-            "quiet": True,
-        }
+        })
     else:
-        ydl_opts = {
+        ydl_opts.update({
             "format": f"bv*[height={choice}]+ba/b[height={choice}]/bv*[height<={choice}]+ba/b[height<={choice}]",
             "format_sort": ["fps", "vbr", "abr"],
             "outtmpl": output_template,
@@ -664,9 +679,7 @@ def process_download(call):
             "postprocessor_args": {
                 "merger": ["-c:v", "copy", "-c:a", "aac", "-b:a", "320k"]
             },
-            "noplaylist": True,
-            "quiet": True,
-        }
+        })
 
     downloaded_file = None
     try:
@@ -722,7 +735,7 @@ def process_download(call):
         bot.delete_message(call.message.chat.id, status_msg.message_id)
 
     except Exception as e:
-        safe_err = html.escape(str(e)[:200])
+        safe_err = html.escape(str(e)[:250])
         bot.edit_message_text(
             f"❌ حدث خطأ أثناء التحميل:\n<code>{safe_err}</code>",
             chat_id=call.message.chat.id,
@@ -738,5 +751,5 @@ def process_download(call):
 
 
 if __name__ == "__main__":
-    print("Bot is running with Interactive Quality Selector, Max Quality, Admin Panel & NSFW Filter...")
+    print("Bot is running without cookies (Multi-client bypass enabled)...")
     bot.infinity_polling(skip_pending=True)
