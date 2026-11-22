@@ -57,6 +57,7 @@ jobs:
       - name: 6. Run Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
         run: |
           timeout -s SIGINT 20400 python bot.py || true
 
