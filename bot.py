@@ -8,7 +8,9 @@ from telebot import apihelper, types
 import yt_dlp
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
+# توجيه البوت لاستخدام سيرفر Telegram Local Bot API المحلي (يدعم حتى 2GB)
 apihelper.API_URL = "http://localhost:8081/bot{0}/{1}"
 apihelper.FILE_URL = "http://localhost:8081"
 
@@ -19,10 +21,15 @@ STATS_FILE = "users_stats.json"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 user_links = {}
 
+# تسجيل الخروج من السيرفر الرسمي لتيليجرام للانتقال للسيرفر المحلي تلقائياً
 try:
     requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/logOut", timeout=10)
 except Exception:
     pass
+
+
+def is_admin(user_id):
+    return ADMIN_ID != 0 and user_id == ADMIN_ID
 
 
 def load_stats():
@@ -57,6 +64,8 @@ def track_user(user, increment_download=False):
         stats["users"][uid]["last_active"] = today
         if user.first_name:
             stats["users"][uid]["name"] = user.first_name
+        if user.username:
+            stats["users"][uid]["username"] = user.username
 
     if increment_download:
         stats["users"][uid]["downloads"] = stats["users"][uid].get("downloads", 0) + 1
@@ -66,7 +75,7 @@ def track_user(user, increment_download=False):
     return stats
 
 
-def get_stats_summary(stats):
+def get_admin_stats_report(stats):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     users = stats.get("users", {})
     total_users = len(users)
@@ -74,32 +83,45 @@ def get_stats_summary(stats):
     active_users = sum(1 for u in users.values() if u.get("downloads", 0) > 0)
     total_downloads = stats.get("total_downloads", 0)
 
+    # عرض آخر 10 مستخدمين تفاعلوا مع البوت
+    recent_users = list(users.items())[-10:]
+    users_list_text = ""
+    for uid, info in reversed(recent_users):
+        uname = f"@{info['username']}" if info.get("username") else f"`{uid}`"
+        users_list_text += f"- {info.get('name', 'User')} ({uname}) | تحميلات: {info.get('downloads', 0)}\n"
+
     return (
-        f"📊 **إحصائيات البوت:**\n"
+        f"🔐 **لوحة إحصائيات الأدمن:**\n"
         f"👥 إجمالي المستخدمين: **{total_users}**\n"
         f"🔥 مستخدمون فعليون (قاموا بالتحميل): **{active_users}**\n"
         f"📅 نشطون اليوم: **{active_today}**\n"
-        f"📥 إجمالي التحميلات: **{total_downloads}**"
+        f"📥 إجمالي التحميلات: **{total_downloads}**\n\n"
+        f"🕒 **آخر المستخدمين:**\n{users_list_text or 'لا يوجد بعد'}"
     )
 
 
 @bot.message_handler(commands=["start", "help"])
 def send_welcome(message):
     stats = track_user(message.from_user)
-    summary = get_stats_summary(stats)
-    bot.reply_to(
-        message,
+    welcome_text = (
         "أهلاً بك! 👋\n"
-        "أرسل لي أي رابط فيديو (YouTube, TikTok, Facebook, Instagram...) وسأقوم بتحميله لك بأعلى جودة (يدعم حتى 2GB).\n\n"
-        f"{summary}",
-        parse_mode="Markdown"
+        "أرسل لي أي رابط فيديو (YouTube, TikTok, Facebook, Instagram...) وسأقوم بتحميله لك بأعلى جودة (يدعم حتى 2GB)."
     )
+
+    if is_admin(message.from_user.id):
+        welcome_text += f"\n\n{get_admin_stats_report(stats)}"
+        bot.reply_to(message, welcome_text, parse_mode="Markdown")
+    else:
+        bot.reply_to(message, welcome_text)
 
 
 @bot.message_handler(commands=["stats"])
 def send_stats(message):
+    # لا يستجيب إلا للأدمن فقط
+    if not is_admin(message.from_user.id):
+        return
     stats = track_user(message.from_user)
-    bot.reply_to(message, get_stats_summary(stats), parse_mode="Markdown")
+    bot.reply_to(message, get_admin_stats_report(stats), parse_mode="Markdown")
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.startswith(("http://", "https://")))
@@ -203,7 +225,6 @@ def process_download(call):
                     timeout=600
                 )
 
-        # تسجيل عملية التحميل الناجحة للمستخدم
         track_user(call.from_user, increment_download=True)
         bot.delete_message(call.message.chat.id, status_msg.message_id)
 
@@ -223,5 +244,5 @@ def process_download(call):
 
 
 if __name__ == "__main__":
-    print("Bot is running with Local Bot API & User Stats...")
+    print("Bot is running with Local Bot API (2GB) & Admin-only Stats...")
     bot.infinity_polling(skip_pending=True)
