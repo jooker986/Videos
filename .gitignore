@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.env
+downloads/
+venv/
+cookies.txt
+supported_sites_clean.txt
