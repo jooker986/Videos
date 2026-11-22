@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import html
 from datetime import datetime, timezone
 import requests
 import telebot
@@ -83,20 +84,24 @@ def get_admin_stats_report(stats):
     active_users = sum(1 for u in users.values() if u.get("downloads", 0) > 0)
     total_downloads = stats.get("total_downloads", 0)
 
-    # عرض آخر 10 مستخدمين تفاعلوا مع البوت
+    # عرض آخر 10 مستخدمين تفاعلوا مع البوت مع حماية الرموز الخاصة بـ html.escape
     recent_users = list(users.items())[-10:]
     users_list_text = ""
     for uid, info in reversed(recent_users):
-        uname = f"@{info['username']}" if info.get("username") else f"`{uid}`"
-        users_list_text += f"- {info.get('name', 'User')} ({uname}) | تحميلات: {info.get('downloads', 0)}\n"
+        safe_name = html.escape(info.get("name", "User"))
+        if info.get("username"):
+            safe_uname = f"@{html.escape(info['username'])}"
+        else:
+            safe_uname = f"<code>{uid}</code>"
+        users_list_text += f"- {safe_name} ({safe_uname}) | تحميلات: {info.get('downloads', 0)}\n"
 
     return (
-        f"🔐 **لوحة إحصائيات الأدمن:**\n"
-        f"👥 إجمالي المستخدمين: **{total_users}**\n"
-        f"🔥 مستخدمون فعليون (قاموا بالتحميل): **{active_users}**\n"
-        f"📅 نشطون اليوم: **{active_today}**\n"
-        f"📥 إجمالي التحميلات: **{total_downloads}**\n\n"
-        f"🕒 **آخر المستخدمين:**\n{users_list_text or 'لا يوجد بعد'}"
+        f"🔐 <b>لوحة إحصائيات الأدمن:</b>\n"
+        f"👥 إجمالي المستخدمين: <b>{total_users}</b>\n"
+        f"🔥 مستخدمون فعليون (قاموا بالتحميل): <b>{active_users}</b>\n"
+        f"📅 نشطون اليوم: <b>{active_today}</b>\n"
+        f"📥 إجمالي التحميلات: <b>{total_downloads}</b>\n\n"
+        f"🕒 <b>آخر المستخدمين:</b>\n{users_list_text or 'لا يوجد بعد'}"
     )
 
 
@@ -110,7 +115,7 @@ def send_welcome(message):
 
     if is_admin(message.from_user.id):
         welcome_text += f"\n\n{get_admin_stats_report(stats)}"
-        bot.reply_to(message, welcome_text, parse_mode="Markdown")
+        bot.reply_to(message, welcome_text, parse_mode="HTML")
     else:
         bot.reply_to(message, welcome_text)
 
@@ -121,7 +126,7 @@ def send_stats(message):
     if not is_admin(message.from_user.id):
         return
     stats = track_user(message.from_user)
-    bot.reply_to(message, get_admin_stats_report(stats), parse_mode="Markdown")
+    bot.reply_to(message, get_admin_stats_report(stats), parse_mode="HTML")
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.startswith(("http://", "https://")))
@@ -229,11 +234,12 @@ def process_download(call):
         bot.delete_message(call.message.chat.id, status_msg.message_id)
 
     except Exception as e:
+        safe_err = html.escape(str(e)[:200])
         bot.edit_message_text(
-            f"❌ حدث خطأ أثناء التحميل:\n`{str(e)[:200]}`",
+            f"❌ حدث خطأ أثناء التحميل:\n<code>{safe_err}</code>",
             chat_id=call.message.chat.id,
             message_id=status_msg.message_id,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     finally:
         if downloaded_file and os.path.exists(downloaded_file):
