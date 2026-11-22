@@ -1,5 +1,7 @@
 import os
+import json
 import uuid
+from datetime import datetime, timezone
 import requests
 import telebot
 from telebot import apihelper, types
@@ -7,32 +9,102 @@ import yt_dlp
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
-# توجيه البوت لاستخدام سيرفر Telegram Local Bot API المحلي (يدعم حتى 2GB)
 apihelper.API_URL = "http://localhost:8081/bot{0}/{1}"
 apihelper.FILE_URL = "http://localhost:8081"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 DOWNLOAD_DIR = "downloads"
+STATS_FILE = "users_stats.json"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 user_links = {}
 
-# تسجيل الخروج من السيرفر الرسمي لتيليجرام للانتقال للسيرفر المحلي تلقائياً
 try:
     requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/logOut", timeout=10)
 except Exception:
     pass
 
+
+def load_stats():
+    if os.path.exists(STATS_FILE):
+        try:
+            with open(STATS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"users": {}, "total_downloads": 0}
+
+
+def save_stats(data):
+    with open(STATS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def track_user(user, increment_download=False):
+    stats = load_stats()
+    uid = str(user.id)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    if uid not in stats["users"]:
+        stats["users"][uid] = {
+            "name": user.first_name or "User",
+            "username": user.username or "",
+            "joined": today,
+            "last_active": today,
+            "downloads": 0
+        }
+    else:
+        stats["users"][uid]["last_active"] = today
+        if user.first_name:
+            stats["users"][uid]["name"] = user.first_name
+
+    if increment_download:
+        stats["users"][uid]["downloads"] = stats["users"][uid].get("downloads", 0) + 1
+        stats["total_downloads"] = stats.get("total_downloads", 0) + 1
+
+    save_stats(stats)
+    return stats
+
+
+def get_stats_summary(stats):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    users = stats.get("users", {})
+    total_users = len(users)
+    active_today = sum(1 for u in users.values() if u.get("last_active") == today)
+    active_users = sum(1 for u in users.values() if u.get("downloads", 0) > 0)
+    total_downloads = stats.get("total_downloads", 0)
+
+    return (
+        f"📊 **إحصائيات البوت:**\n"
+        f"👥 إجمالي المستخدمين: **{total_users}**\n"
+        f"🔥 مستخدمون فعليون (قاموا بالتحميل): **{active_users}**\n"
+        f"📅 نشطون اليوم: **{active_today}**\n"
+        f"📥 إجمالي التحميلات: **{total_downloads}**"
+    )
+
+
 @bot.message_handler(commands=["start", "help"])
 def send_welcome(message):
+    stats = track_user(message.from_user)
+    summary = get_stats_summary(stats)
     bot.reply_to(
         message,
         "أهلاً بك! 👋\n"
-        "أرسل لي أي رابط فيديو (YouTube, TikTok, Facebook, Instagram...) وسأقوم بتحميله لك بأعلى جودة (يدعم حتى 2GB)."
+        "أرسل لي أي رابط فيديو (YouTube, TikTok, Facebook, Instagram...) وسأقوم بتحميله لك بأعلى جودة (يدعم حتى 2GB).\n\n"
+        f"{summary}",
+        parse_mode="Markdown"
     )
+
+
+@bot.message_handler(commands=["stats"])
+def send_stats(message):
+    stats = track_user(message.from_user)
+    bot.reply_to(message, get_stats_summary(stats), parse_mode="Markdown")
+
 
 @bot.message_handler(func=lambda m: m.text and m.text.startswith(("http://", "https://")))
 def handle_url(message):
+    track_user(message.from_user)
     url = message.text.strip()
     req_id = str(uuid.uuid4())[:8]
     user_links[req_id] = url
@@ -43,6 +115,7 @@ def handle_url(message):
     markup.add(btn_video, btn_audio)
 
     bot.reply_to(message, "اختر صيغة التحميل المطلوبة:", reply_markup=markup)
+
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith(("vid|", "aud|")))
 def process_download(call):
@@ -130,6 +203,8 @@ def process_download(call):
                     timeout=600
                 )
 
+        # تسجيل عملية التحميل الناجحة للمستخدم
+        track_user(call.from_user, increment_download=True)
         bot.delete_message(call.message.chat.id, status_msg.message_id)
 
     except Exception as e:
@@ -146,6 +221,7 @@ def process_download(call):
             except OSError:
                 pass
 
+
 if __name__ == "__main__":
-    print("Bot is running with Local Bot API (2GB support)...")
+    print("Bot is running with Local Bot API & User Stats...")
     bot.infinity_polling(skip_pending=True)
