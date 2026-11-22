@@ -1,17 +1,13 @@
-name: Run Telegram Bot 24/7
+name: Run Telegram Bot 24/7 (2GB Limit)
 
 on:
-  # التشغيل التلقائي كل 6 ساعات
   schedule:
     - cron: '0 */6 * * *'
-  # إمكانية التشغيل اليدوي في أي وقت من تبويب Actions
   workflow_dispatch:
-  # إعادة التشغيل تلقائياً عند رفع أي تعديل جديد على الكود
   push:
     branches:
       - main
 
-# إلغاء أي نسخة قديمة شغالة عند بدء نسخة جديدة لمنع تعارض البوت
 concurrency:
   group: telegram-bot-instance
   cancel-in-progress: true
@@ -19,7 +15,6 @@ concurrency:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    # إيقاف المهمة قبل حد الـ 6 ساعات بـ 10 دقائق لتسليم المهمة للدورة التالية بسلاسة
     timeout-minutes: 350
 
     steps:
@@ -36,12 +31,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: 4. Install Python Dependencies
+      - name: 4. Start Local Telegram Bot API Server
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+        run: |
+          mkdir -p /tmp/telegram-bot-api-data
+          docker run -d --name telegram-bot-api \
+            -p 8081:8081 \
+            -v /tmp/telegram-bot-api-data:/var/lib/telegram-bot-api \
+            -e TELEGRAM_API_ID=$API_ID \
+            -e TELEGRAM_API_HASH=$API_HASH \
+            -e TELEGRAM_LOCAL=1 \
+            aiogram/telegram-bot-api:latest
+          sleep 5
+
+      - name: 5. Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 5. Run Bot
+      - name: 6. Run Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
