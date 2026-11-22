@@ -1,7 +1,9 @@
 import os
+import re
 import json
 import uuid
 import html
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 import requests
 import telebot
@@ -22,6 +24,25 @@ STATS_FILE = "users_stats.json"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 user_links = {}
 
+# قائمة النطاقات والكلمات المفتاحية المحظورة
+BLOCKED_DOMAINS = {
+    "pornhub.com", "xvideos.com", "xnxx.com", "xhamster.com", "redtube.com",
+    "youporn.com", "tube8.com", "spankbang.com", "eporner.com", "hqporner.com",
+    "beeg.com", "brazzers.com", "bangbros.com", "realitykings.com", "naughtyamerica.com",
+    "chaturbate.com", "stripchat.com", "cam4.com", "myfreecams.com", "livejasmin.com",
+    "onlyfans.com", "fansly.com", "manyvids.com", "clips4sale.com", "rule34.xxx",
+    "hanime.tv", "hentaihaven.xxx", "nhentai.net", "e-hentai.org", "motherless.com",
+    "tnaflix.com", "drtuber.com", "empflix.com", "slutload.com", "xtube.com",
+    "fapello.com", "erome.com", "bunkr.si", "coomer.su", "kemono.su", "javhd.com"
+}
+
+BLOCKED_KEYWORDS = [
+    "porn", "xxx", "xnxx", "xvideos", "xhamster", "hentai", "nsfw", "nude",
+    "nudes", "sex", "erotic", "onlyfans", "chaturbate", "camgirl", "milf",
+    "blowjob", "handjob", "creampie", "gangbang", "incest", "jav", "rule34",
+    "سكس", "إباحي", "اباحي", "نيك", "بورن", "شرموط", "قحبة", "عاري", "عارية", "للكبار فقط"
+]
+
 # تسجيل الخروج من السيرفر الرسمي لتيليجرام للانتقال للسيرفر المحلي تلقائياً
 try:
     requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/logOut", timeout=10)
@@ -33,6 +54,54 @@ def is_admin(user_id):
     return ADMIN_ID != 0 and user_id == ADMIN_ID
 
 
+def is_nsfw_url(url):
+    """فحص مبدئي للرابط والنطاق قبل بدء المعالجة"""
+    try:
+        parsed = urlparse(url.lower())
+        domain = parsed.netloc.replace("www.", "")
+        for blocked in BLOCKED_DOMAINS:
+            if domain == blocked or domain.endswith("." + blocked):
+                return True
+        full_url_lower = url.lower()
+        for kw in BLOCKED_KEYWORDS:
+            if re.search(rf"\b{re.escape(kw)}\b", full_url_lower):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def is_nsfw_metadata(info):
+    """فحص بيانات الفيديو المستخرجة من yt-dlp (المستخرج، التصنيف العمري، العنوان، الوسوم)"""
+    if not info:
+        return False
+
+    # 1. فحص التصنيف العمري (18+)
+    age_limit = info.get("age_limit") or 0
+    if age_limit >= 18:
+        return True
+
+    # 2. فحص اسم المستخرج (Extractor) في yt-dlp
+    extractor = (info.get("extractor") or info.get("extractor_key") or "").lower()
+    for blocked in BLOCKED_DOMAINS:
+        site_name = blocked.split(".")[0]
+        if site_name in extractor:
+            return True
+
+    # 3. فحص العنوان والوصف والوسوم (Tags)
+    title = info.get("title") or ""
+    description = info.get("description") or ""
+    tags = " ".join(info.get("tags") or [])
+    categories = " ".join(info.get("categories") or [])
+    combined_text = f"{title} {description[:500]} {tags} {categories}".lower()
+
+    for kw in BLOCKED_KEYWORDS:
+        if re.search(rf"\b{re.escape(kw)}\b", combined_text):
+            return True
+
+    return False
+
+
 def load_stats():
     if os.path.exists(STATS_FILE):
         try:
@@ -40,7 +109,7 @@ def load_stats():
                 return json.load(f)
         except Exception:
             pass
-    return {"users": {}, "total_downloads": 0}
+    return {"users": {}, "total_downloads": 0, "blocked_attempts": 0}
 
 
 def save_stats(data):
@@ -48,7 +117,7 @@ def save_stats(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def track_user(user, increment_download=False):
+def track_user(user, increment_download=False, increment_blocked=False):
     stats = load_stats()
     uid = str(user.id)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -59,7 +128,8 @@ def track_user(user, increment_download=False):
             "username": user.username or "",
             "joined": today,
             "last_active": today,
-            "downloads": 0
+            "downloads": 0,
+            "blocked": 0
         }
     else:
         stats["users"][uid]["last_active"] = today
@@ -72,6 +142,10 @@ def track_user(user, increment_download=False):
         stats["users"][uid]["downloads"] = stats["users"][uid].get("downloads", 0) + 1
         stats["total_downloads"] = stats.get("total_downloads", 0) + 1
 
+    if increment_blocked:
+        stats["users"][uid]["blocked"] = stats["users"][uid].get("blocked", 0) + 1
+        stats["blocked_attempts"] = stats.get("blocked_attempts", 0) + 1
+
     save_stats(stats)
     return stats
 
@@ -83,8 +157,8 @@ def get_admin_stats_report(stats):
     active_today = sum(1 for u in users.values() if u.get("last_active") == today)
     active_users = sum(1 for u in users.values() if u.get("downloads", 0) > 0)
     total_downloads = stats.get("total_downloads", 0)
+    blocked_attempts = stats.get("blocked_attempts", 0)
 
-    # عرض آخر 10 مستخدمين تفاعلوا مع البوت مع حماية الرموز الخاصة بـ html.escape
     recent_users = list(users.items())[-10:]
     users_list_text = ""
     for uid, info in reversed(recent_users):
@@ -100,7 +174,8 @@ def get_admin_stats_report(stats):
         f"👥 إجمالي المستخدمين: <b>{total_users}</b>\n"
         f"🔥 مستخدمون فعليون (قاموا بالتحميل): <b>{active_users}</b>\n"
         f"📅 نشطون اليوم: <b>{active_today}</b>\n"
-        f"📥 إجمالي التحميلات: <b>{total_downloads}</b>\n\n"
+        f"📥 إجمالي التحميلات: <b>{total_downloads}</b>\n"
+        f"🚫 محاولات محظورة (NSFW): <b>{blocked_attempts}</b>\n\n"
         f"🕒 <b>آخر المستخدمين:</b>\n{users_list_text or 'لا يوجد بعد'}"
     )
 
@@ -110,7 +185,8 @@ def send_welcome(message):
     stats = track_user(message.from_user)
     welcome_text = (
         "أهلاً بك! 👋\n"
-        "أرسل لي أي رابط فيديو (YouTube, TikTok, Facebook, Instagram...) وسأقوم بتحميله لك بأعلى جودة (يدعم حتى 2GB)."
+        "أرسل لي أي رابط فيديو (YouTube, TikTok, Facebook, Instagram...) وسأقوم بتحميله لك بأعلى جودة (يدعم حتى 2GB).\n"
+        "⚠️ يُمنع استخدام البوت لتحميل أي محتوى إباحي أو مخالف."
     )
 
     if is_admin(message.from_user.id):
@@ -122,7 +198,6 @@ def send_welcome(message):
 
 @bot.message_handler(commands=["stats"])
 def send_stats(message):
-    # لا يستجيب إلا للأدمن فقط
     if not is_admin(message.from_user.id):
         return
     stats = track_user(message.from_user)
@@ -131,8 +206,15 @@ def send_stats(message):
 
 @bot.message_handler(func=lambda m: m.text and m.text.startswith(("http://", "https://")))
 def handle_url(message):
-    track_user(message.from_user)
     url = message.text.strip()
+
+    # المستوى الأول من الفلترة: فحص الرابط والنطاق فوراً
+    if is_nsfw_url(url):
+        track_user(message.from_user, increment_blocked=True)
+        bot.reply_to(message, "🚫 عذراً، هذا الرابط محظور لاحتوائه على محتوى إباحي أو غير لائق.")
+        return
+
+    track_user(message.from_user)
     req_id = str(uuid.uuid4())[:8]
     user_links[req_id] = url
 
@@ -153,9 +235,18 @@ def process_download(call):
         bot.answer_callback_query(call.id, "انتهت صلاحية هذا الطلب، أرسل الرابط مجدداً.", show_alert=True)
         return
 
+    if is_nsfw_url(url):
+        track_user(call.from_user, increment_blocked=True)
+        bot.edit_message_text(
+            "🚫 عذراً، هذا الرابط محظور لاحتوائه على محتوى إباحي أو غير لائق.",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id
+        )
+        return
+
     bot.answer_callback_query(call.id)
     status_msg = bot.edit_message_text(
-        "⏳ جاري التحميل بأعلى جودة... يرجى الانتظار.",
+        "🔍 جاري فحص الرابط والتحقق من المحتوى...",
         chat_id=call.message.chat.id,
         message_id=call.message.message_id
     )
@@ -186,6 +277,26 @@ def process_download(call):
 
     downloaded_file = None
     try:
+        # المستوى الثاني من الفلترة: جلب البيانات الوصفية أولاً بدون تحميل الملف
+        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True}) as ydl_check:
+            info = ydl_check.extract_info(url, download=False)
+
+        if is_nsfw_metadata(info):
+            track_user(call.from_user, increment_blocked=True)
+            bot.edit_message_text(
+                "🚫 تم حظر التحميل: المحتوى مصنف للبالغين (+18) أو غير لائق.",
+                chat_id=call.message.chat.id,
+                message_id=status_msg.message_id
+            )
+            return
+
+        bot.edit_message_text(
+            "⏳ جاري التحميل بأعلى جودة... يرجى الانتظار.",
+            chat_id=call.message.chat.id,
+            message_id=status_msg.message_id
+        )
+
+        # بدء التحميل الفعلي بعد اجتياز الفلترة
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             title = info.get("title", "Media")
@@ -250,5 +361,5 @@ def process_download(call):
 
 
 if __name__ == "__main__":
-    print("Bot is running with Local Bot API (2GB) & Admin-only Stats...")
+    print("Bot is running with NSFW Filter, Local Bot API & Admin Stats...")
     bot.infinity_polling(skip_pending=True)
