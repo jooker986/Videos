@@ -54,27 +54,54 @@ except Exception:
     pass
 
 
+# --- دوال مستخلصة من youtube_downloader.py لتنظيف روابط يوتيوب ---
+
+def extract_youtube_id(url):
+    patterns = [
+        r'youtu\.be/([0-9A-Za-z_-]{11})',
+        r'[?&]v=([0-9A-Za-z_-]{11})',
+        r'/(?:v|embed|shorts|live)/([0-9A-Za-z_-]{11})',
+        r'%3Fv%3D([0-9A-Za-z_-]{11})'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+
+def normalize_url(url):
+    """تنظيف وتوحيد روابط يوتيوب (Shorts / youtu.be / yewtu.be) إلى الصيغة القياسية"""
+    url = url.strip().replace("yewtu.be", "youtube.com")
+    if any(domain in url.lower() for domain in ["youtube.com", "youtu.be"]):
+        vid_id = extract_youtube_id(url)
+        if vid_id:
+            return f"https://www.youtube.com/watch?v={vid_id}"
+    return url
+
+
 def get_base_ydl_opts():
-    """إعدادات yt-dlp مع قراءة ملف الكوكيز تلقائياً في حال وجوده + دعم PO Token"""
+    """إعدادات yt-dlp متوافقة مع الكوكيز و PO Token لتجنب خطأ The page needs to be reloaded"""
+    has_cookies = os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0
+
     opts = {
         "quiet": True,
         "noplaylist": True,
         "geo_bypass": True,
         "extractor_args": {
-            "youtube": {
-                "player_client": ["tv", "android_vr", "web_embedded", "ios", "web"],
-            },
             "youtubepot-bgutilhttp": {
                 "base_url": ["http://127.0.0.1:4416"]
             }
-        },
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9"
         }
     }
-    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
+
+    if has_cookies:
         opts["cookiefile"] = COOKIES_FILE
+    else:
+        opts["extractor_args"]["youtube"] = {
+            "player_client": ["tv", "android_vr", "web_embedded"],
+        }
+
     return opts
 
 
@@ -163,6 +190,7 @@ def format_size(bytes_num):
 
 
 def extract_available_qualities(info):
+    """ترتيب الجودات المتاحة مع أولوية الكوديك ومعدل الإطارات وحساب الحجم الإجمالي"""
     formats = info.get("formats") or []
     best_audio_size = 0
 
@@ -571,7 +599,8 @@ def handle_admin_broadcast_text(message):
 
 @bot.message_handler(func=lambda m: m.text and m.text.startswith(("http://", "https://")))
 def handle_url(message):
-    url = message.text.strip()
+    raw_url = message.text.strip()
+    url = normalize_url(raw_url)
 
     if is_nsfw_url(url):
         track_user(message.from_user, increment_blocked=True)
@@ -658,6 +687,7 @@ def process_download(call):
     output_template = os.path.join(DOWNLOAD_DIR, f"{file_id}.%(ext)s")
     ydl_opts = get_base_ydl_opts()
 
+    # أولوية الكوديك (AV1 > VP9 > H264) وأعلى FPS وأعلى معدل بت صوتي (مستخلصة من youtube_downloader.py)
     if choice == "audio":
         ydl_opts.update({
             "format": "bestaudio/best",
@@ -672,7 +702,7 @@ def process_download(call):
     elif choice == "best":
         ydl_opts.update({
             "format": "bv*+ba/b",
-            "format_sort": ["res", "fps", "vbr", "abr"],
+            "format_sort": ["res", "fps", "vcodec:av01", "vcodec:vp9", "vbr", "abr"],
             "outtmpl": output_template,
             "merge_output_format": "mp4",
             "postprocessor_args": {
@@ -682,7 +712,7 @@ def process_download(call):
     else:
         ydl_opts.update({
             "format": f"bv*[height={choice}]+ba/b[height={choice}]/bv*[height<={choice}]+ba/b[height<={choice}]",
-            "format_sort": ["fps", "vbr", "abr"],
+            "format_sort": ["fps", "vcodec:av01", "vcodec:vp9", "vbr", "abr"],
             "outtmpl": output_template,
             "merge_output_format": "mp4",
             "postprocessor_args": {
@@ -760,5 +790,5 @@ def process_download(call):
 
 
 if __name__ == "__main__":
-    print("Bot is running with Cookies Support, Local Bot API (2GB), Quality Selector & Admin Panel...")
+    print("Bot is running with Normalized YouTube URLs, Codec Priority, Cookies Fix & Admin Panel...")
     bot.infinity_polling(skip_pending=True)
