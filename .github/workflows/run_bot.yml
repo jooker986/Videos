@@ -59,14 +59,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -U --pre -r requirements.txt
 
-      - name: 6. Run Bot
+      - name: 6. Create YouTube Cookies File
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: |
+          if [ -n "$YOUTUBE_COOKIES" ]; then
+            printf "%s\n" "$YOUTUBE_COOKIES" > cookies.txt
+          fi
+
+      - name: 7. Run Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           ADMIN_ID: ${{ secrets.ADMIN_ID }}
         run: |
           timeout -s SIGINT 20400 python bot.py || true
 
-      - name: 7. Save User Stats to GitHub
+      - name: 8. Save User Stats to GitHub
         if: always()
         run: |
           git config --local user.email "action@github.com"
