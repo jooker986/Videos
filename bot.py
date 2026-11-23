@@ -81,7 +81,7 @@ def normalize_url(url):
 
 
 def get_base_ydl_opts():
-    """إعدادات yt-dlp متوافقة مع الكوكيز و PO Token لتجنب خطأ The page needs to be reloaded"""
+    """إعدادات yt-dlp متوافقة مع الكوكيز و PO Token لتجنب أخطاء الجلسة والصيغ"""
     has_cookies = os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0
 
     opts = {
@@ -190,7 +190,7 @@ def format_size(bytes_num):
 
 
 def extract_available_qualities(info):
-    """ترتيب الجودات المتاحة مع أولوية الكوديك ومعدل الإطارات وحساب الحجم الإجمالي"""
+    """ترتيب الجودات الفعلية المتاحة مع استبعاد الصور المصغرة (Storyboards)"""
     formats = info.get("formats") or []
     best_audio_size = 0
 
@@ -203,8 +203,16 @@ def extract_available_qualities(info):
     heights_map = {}
     for f in formats:
         vcodec = f.get("vcodec")
+        ext = (f.get("ext") or "").lower()
         height = f.get("height")
-        if not vcodec or vcodec == "none" or not height:
+        protocol = (f.get("protocol") or "").lower()
+
+        # استبعاد الصور المصغرة (mhtml/storyboard) والمسارات غير الصالحة للفيديو
+        if not vcodec or vcodec == "none" or not height or height < 144:
+            continue
+        if ext in ("mhtml", "webp", "jpg", "png") or "storyboard" in (f.get("format_note") or "").lower():
+            continue
+        if not f.get("url") and not protocol:
             continue
 
         v_size = f.get("filesize") or f.get("filesize_approx") or 0
@@ -664,7 +672,42 @@ def handle_url(message):
         )
 
 
-# --- تنفيذ التحميل بالجودة المختارة ---
+# --- تنفيذ التحميل بالجودة المختارة مع مسار احتياطي للصيغ ---
+
+def build_ydl_opts(choice, output_template, fallback=False):
+    ydl_opts = get_base_ydl_opts()
+    ydl_opts["outtmpl"] = output_template
+
+    if choice == "audio":
+        ydl_opts.update({
+            "format": "bestaudio/best" if not fallback else "best",
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "320",
+            }],
+        })
+    elif choice == "best" or fallback:
+        ydl_opts.update({
+            "format": "bv*+ba/b/best",
+            "merge_output_format": "mp4",
+        })
+    else:
+        # مسار مرن يبحث عن الدقة المطلوبة، وإن لم تتوفر كمسارين منفصلين يأخذ أقرب صيغة مدمجة
+        ydl_opts.update({
+            "format": (
+                f"bv*[height={choice}]+ba/"
+                f"b[height={choice}]/"
+                f"bv*[height<={choice}]+ba/"
+                f"b[height<={choice}]/"
+                f"bv*+ba/b/best"
+            ),
+            "format_sort": ["res", "fps", "vbr", "abr"],
+            "merge_output_format": "mp4",
+        })
+
+    return ydl_opts
+
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("dl|"))
 def process_download(call):
@@ -678,55 +721,29 @@ def process_download(call):
     bot.answer_callback_query(call.id)
     selected_label = "صوت MP3 (320kbps)" if choice == "audio" else ("أفضل جودة" if choice == "best" else f"دقة {choice}p")
     status_msg = bot.edit_message_text(
-        f"⏳ جاري التحميل ({selected_label}) بأعلى جودة صوت وصورة... يرجى الانتظار.",
+        f"⏳ جاري التحميل ({selected_label})... يرجى الانتظار.",
         chat_id=call.message.chat.id,
         message_id=call.message.message_id
     )
 
     file_id = str(uuid.uuid4())[:8]
     output_template = os.path.join(DOWNLOAD_DIR, f"{file_id}.%(ext)s")
-    ydl_opts = get_base_ydl_opts()
-
-    # أولوية الكوديك (AV1 > VP9 > H264) وأعلى FPS وأعلى معدل بت صوتي (مستخلصة من youtube_downloader.py)
-    if choice == "audio":
-        ydl_opts.update({
-            "format": "bestaudio/best",
-            "format_sort": ["abr", "asr"],
-            "outtmpl": output_template,
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "320",
-            }],
-        })
-    elif choice == "best":
-        ydl_opts.update({
-            "format": "bv*+ba/b",
-            "format_sort": ["res", "fps", "vcodec:av01", "vcodec:vp9", "vbr", "abr"],
-            "outtmpl": output_template,
-            "merge_output_format": "mp4",
-            "postprocessor_args": {
-                "merger": ["-c:v", "copy", "-c:a", "aac", "-b:a", "320k"]
-            },
-        })
-    else:
-        ydl_opts.update({
-            "format": f"bv*[height={choice}]+ba/b[height={choice}]/bv*[height<={choice}]+ba/b[height<={choice}]",
-            "format_sort": ["fps", "vcodec:av01", "vcodec:vp9", "vbr", "abr"],
-            "outtmpl": output_template,
-            "merge_output_format": "mp4",
-            "postprocessor_args": {
-                "merger": ["-c:v", "copy", "-c:a", "aac", "-b:a", "320k"]
-            },
-        })
-
     downloaded_file = None
+
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get("title", "Media")
-            actual_height = info.get("height")
-            res_text = f"{actual_height}p" if actual_height else (f"{choice}p" if choice.isdigit() else "")
+        try:
+            with yt_dlp.YoutubeDL(build_ydl_opts(choice, output_template, fallback=False)) as ydl:
+                info = ydl.extract_info(url, download=True)
+        except Exception as first_err:
+            if "Requested format is not available" in str(first_err):
+                with yt_dlp.YoutubeDL(build_ydl_opts(choice, output_template, fallback=True)) as ydl:
+                    info = ydl.extract_info(url, download=True)
+            else:
+                raise first_err
+
+        title = info.get("title", "Media")
+        actual_height = info.get("height")
+        res_text = f"{actual_height}p" if actual_height else (f"{choice}p" if choice.isdigit() else "")
 
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(file_id):
@@ -790,5 +807,5 @@ def process_download(call):
 
 
 if __name__ == "__main__":
-    print("Bot is running with Normalized YouTube URLs, Codec Priority, Cookies Fix & Admin Panel...")
+    print("Bot is running with Smart Format Fallback, Cookies Support, Local Bot API & Admin Panel...")
     bot.infinity_polling(skip_pending=True)
