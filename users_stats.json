@@ -16,5 +16,6 @@
       "blocked": 0
     }
   },
-  "total_downloads": 1
+  "total_downloads": 1,
+  "blocked_attempts": 0
 }
