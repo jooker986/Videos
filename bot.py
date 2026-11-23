@@ -23,6 +23,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 DOWNLOAD_DIR = "downloads"
 STATS_FILE = "users_stats.json"
 SITES_FILE = "supported_sites_clean.txt"
+COOKIES_FILE = "cookies.txt"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 user_links = {}
@@ -54,15 +55,14 @@ except Exception:
 
 
 def get_base_ydl_opts():
-    """إعدادات yt-dlp مع دعم PO Token التلقائي وتدوير عملاء يوتيوب بدون كوكيز"""
-    return {
+    """إعدادات yt-dlp مع قراءة ملف الكوكيز تلقائياً في حال وجوده + دعم PO Token"""
+    opts = {
         "quiet": True,
         "noplaylist": True,
         "geo_bypass": True,
         "extractor_args": {
             "youtube": {
                 "player_client": ["tv", "android_vr", "web_embedded", "ios", "web"],
-                "player_skip": ["webpage", "configs"]
             },
             "youtubepot-bgutilhttp": {
                 "base_url": ["http://127.0.0.1:4416"]
@@ -73,6 +73,9 @@ def get_base_ydl_opts():
             "Accept-Language": "en-US,en;q=0.9"
         }
     }
+    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
+        opts["cookiefile"] = COOKIES_FILE
+    return opts
 
 
 def generate_clean_sites_file():
@@ -422,6 +425,7 @@ def handle_menu_callbacks(call):
         active_users = sum(1 for u in users.values() if u.get("downloads", 0) > 0)
         total_downloads = stats.get("total_downloads", 0)
         blocked_attempts = stats.get("blocked_attempts", 0)
+        cookies_status = "✅ مفعّلة" if (os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0) else "⚠️ غير مضافة"
 
         text = (
             f"📊 <b>الإحصائيات العامة للبوت:</b>\n\n"
@@ -429,7 +433,8 @@ def handle_menu_callbacks(call):
             f"🔥 مستخدمون فعليون (قاموا بالتحميل): <b>{active_users}</b>\n"
             f"📅 نشطون اليوم: <b>{active_today}</b>\n"
             f"📥 إجمالي التحميلات الناجحة: <b>{total_downloads}</b>\n"
-            f"🚫 محاولات تحميل محظورة (NSFW): <b>{blocked_attempts}</b>"
+            f"🚫 محاولات تحميل محظورة (NSFW): <b>{blocked_attempts}</b>\n"
+            f"🍪 حالة كوكيز يوتيوب: <b>{cookies_status}</b>"
         )
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 رجوع للوحة التحكم", callback_data="admin_panel"))
@@ -755,5 +760,5 @@ def process_download(call):
 
 
 if __name__ == "__main__":
-    print("Bot is running with PO Token Provider, Local Bot API (2GB), Quality Selector & Admin Panel...")
+    print("Bot is running with Cookies Support, Local Bot API (2GB), Quality Selector & Admin Panel...")
     bot.infinity_polling(skip_pending=True)
