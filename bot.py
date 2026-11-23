@@ -177,6 +177,8 @@ def get_base_ydl_opts() -> dict:
         "no_warnings": True,
         "noplaylist": True,
         "geo_bypass": True,
+        "js_runtimes": {"node": {}},
+        "remote_components": ["ejs:github"],
         "extractor_args": {
             "youtubepot-bgutilhttp": {
                 "base_url": ["http://127.0.0.1:4416"]
@@ -186,6 +188,9 @@ def get_base_ydl_opts() -> dict:
 
     if has_cookies:
         opts["cookiefile"] = COOKIES_FILE
+        opts["extractor_args"]["youtube"] = {
+            "player_client": ["web_creator", "mweb", "web"],
+        }
     else:
         opts["extractor_args"]["youtube"] = {
             "player_client": ["tv", "android_vr", "web_embedded"],
@@ -690,7 +695,9 @@ def handle_url(message):
     wait_msg = bot.reply_to(message, "🔍 جاري فحص الرابط واستخراج الجودات المتاحة...")
 
     try:
-        with yt_dlp.YoutubeDL(get_base_ydl_opts()) as ydl:
+        check_opts = get_base_ydl_opts()
+        check_opts["ignore_no_formats_error"] = True
+        with yt_dlp.YoutubeDL(check_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
         if is_nsfw_metadata(info):
@@ -809,7 +816,7 @@ def build_ydl_opts(choice: str, fmt_info: dict, output_template: str, progress_h
 
     if choice == "audio":
         ydl_opts.update({
-            "format": "bestaudio/best" if not fallback else "best",
+            "format": "bestaudio/best/best*" if not fallback else "best*/best",
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
@@ -818,7 +825,7 @@ def build_ydl_opts(choice: str, fmt_info: dict, output_template: str, progress_h
         })
     elif choice == "best" or fallback:
         ydl_opts.update({
-            "format": "bv*+ba/b/best",
+            "format": "bv*+ba/b/best*/best",
             "merge_output_format": "mp4",
         })
     else:
@@ -826,11 +833,11 @@ def build_ydl_opts(choice: str, fmt_info: dict, output_template: str, progress_h
         if fmt_info and fmt_info.get("format_id"):
             fid = fmt_info["format_id"]
             if fmt_info.get("has_audio"):
-                fmt_str = f"{fid}/bv*[height={choice}]+ba/b[height={choice}]/best"
+                fmt_str = f"{fid}/bv*[height={choice}]+ba/b[height={choice}]/best*/best"
             else:
-                fmt_str = f"{fid}+bestaudio/{fid}+ba/bv*[height={choice}]+ba/b[height={choice}]/best"
+                fmt_str = f"{fid}+bestaudio/{fid}+ba/bv*[height={choice}]+ba/b[height={choice}]/best*/best"
         else:
-            fmt_str = f"bv*[height={choice}]+ba/b[height={choice}]/bv*[height<={choice}]+ba/best"
+            fmt_str = f"bv*[height={choice}]+ba/b[height={choice}]/bv*[height<={choice}]+ba/best*/best"
 
         ydl_opts.update({
             "format": fmt_str,
