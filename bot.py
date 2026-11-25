@@ -4,6 +4,7 @@ import json
 import uuid
 import html
 import time
+import signal
 import logging
 import threading
 from urllib.parse import urlparse
@@ -27,6 +28,10 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 USE_LOCAL_API = os.environ.get("USE_LOCAL_API", "1") == "1"
 
+# إعدادات الاشتراك الإجباري في القناة
+FORCE_SUB_CHANNEL = "@Jookerrr98"
+FORCE_SUB_URL = "https://t.me/Jookerrr98"
+
 if USE_LOCAL_API:
     apihelper.API_URL = "http://localhost:8081/bot{0}/{1}"
     apihelper.FILE_URL = "http://localhost:8081"
@@ -42,13 +47,12 @@ SITES_FILE = "supported_sites_clean.txt"
 COOKIES_FILE = "cookies.txt"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# قفل لحماية القراءة والكتابة في ملف الإحصائيات أثناء تعدد الطلبات
 stats_lock = threading.Lock()
 links_lock = threading.Lock()
 
-# تخزين مؤقت للروابط مع وقت الإنشاء لتنظيف المنتهي تلقائياً
 user_requests = {}
 admin_states = {}
+is_shutting_down = False
 
 BLOCKED_DOMAINS = {
     "pornhub.com", "xvideos.com", "xnxx.com", "xhamster.com", "redtube.com",
@@ -70,8 +74,19 @@ BLOCKED_KEYWORDS = [
 
 
 # ==============================================================================
-# 2. تهيئة السيرفر والتنظيف التلقائي في الخلفية
+# 2. تهيئة السيرفر والتنظيف التلقائي والإغلاق الآمن (Graceful Shutdown)
 # ==============================================================================
+def handle_shutdown_signal(signum, frame):
+    global is_shutting_down
+    logger.info(f"Received shutdown signal ({signum}). Stopping polling gracefully to save stats...")
+    is_shutting_down = True
+    bot.stop_polling()
+
+
+signal.signal(signal.SIGTERM, handle_shutdown_signal)
+signal.signal(signal.SIGINT, handle_shutdown_signal)
+
+
 def init_bot_session():
     if USE_LOCAL_API:
         try:
@@ -83,7 +98,7 @@ def init_bot_session():
 
 def background_cleaner():
     """مهمة خلفية لتنظيف الروابط منتهية الصلاحية والملفات المؤقتة العالقة"""
-    while True:
+    while not is_shutting_down:
         time.sleep(600)
         now = time.time()
         with links_lock:
@@ -101,7 +116,48 @@ def background_cleaner():
 
 
 # ==============================================================================
-# 3. معالجة الروابط والفلترة الأمنية (NSFW Filter)
+# 3. نظام الاشتراك الإجباري في القناة (@Jookerrr98)
+# ==============================================================================
+def is_user_subscribed(user_id: int) -> bool:
+    """التحقق من اشتراك المستخدم في القناة الإجبارية"""
+    if is_admin(user_id):
+        return True
+    try:
+        member = bot.get_chat_member(FORCE_SUB_CHANNEL, user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception as e:
+        logger.warning(f"Force-sub check failed for {user_id}: {e}")
+        # في حال لم يكن البوت مشرفاً في القناة بعد أو تعذر الاتصال، نمرر المستخدم لتجنب تعطل البوت
+        return True
+
+
+def get_force_sub_markup():
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("📢 اشترك في القناة أولاً", url=FORCE_SUB_URL),
+        types.InlineKeyboardButton("✅ تم الاشتراك — تحقق الآن", callback_data="check_sub")
+    )
+    return markup
+
+
+def send_force_sub_prompt(chat_id: int, reply_to_message_id: int = None):
+    text = (
+        "⚠️ <b>عذراً، لا يمكنك استخدام البوت قبل الاشتراك في قناة البوت الرسمية!</b>\n\n"
+        f"📢 القناة: {FORCE_SUB_CHANNEL}\n\n"
+        "1️⃣ اضغط على زر <b>«اشترك في القناة أولاً»</b> بالأسفل.\n"
+        "2️⃣ بعد الاشتراك، اضغط على زر <b>«تم الاشتراك — تحقق الآن»</b>."
+    )
+    bot.send_message(
+        chat_id,
+        text,
+        parse_mode="HTML",
+        reply_to_message_id=reply_to_message_id,
+        reply_markup=get_force_sub_markup()
+    )
+
+
+# ==============================================================================
+# 4. معالجة الروابط والفلترة الأمنية (NSFW Filter)
 # ==============================================================================
 def extract_youtube_id(url: str):
     patterns = [
@@ -168,7 +224,7 @@ def is_nsfw_metadata(info: dict) -> bool:
 
 
 # ==============================================================================
-# 4. إعدادات yt-dlp واستخراج الجودات بدقة عالية
+# 5. إعدادات yt-dlp واستخراج الجودات بدقة عالية
 # ==============================================================================
 def get_base_ydl_opts() -> dict:
     has_cookies = os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0
@@ -218,10 +274,6 @@ def format_duration(seconds) -> str:
 
 
 def extract_available_qualities(info: dict):
-    """
-    يستخرج أفضل صيغة فيديو لكل دقة متاحة ويربطها مباشرة بـ format_id الفعلي
-    لتجنب أخطاء Requested format is not available نهائياً.
-    """
     formats = info.get("formats") or []
     best_audio_size = 0
 
@@ -249,7 +301,6 @@ def extract_available_qualities(info: dict):
         fps = f.get("fps") or 0
         tbr = f.get("tbr") or 0
 
-        # تفضيل الصيغة ذات معدل البت الأعلى لنفس الدقة
         score = (fps, tbr, total_size)
         if height not in heights_map or score > heights_map[height]["score"]:
             heights_map[height] = {
@@ -307,7 +358,7 @@ def generate_clean_sites_file():
 
 
 # ==============================================================================
-# 5. إدارة الإحصائيات والمستخدمين (Thread-Safe)
+# 6. إدارة الإحصائيات والمستخدمين (Thread-Safe)
 # ==============================================================================
 def is_admin(user_id: int) -> bool:
     return ADMIN_ID != 0 and user_id == ADMIN_ID
@@ -366,11 +417,14 @@ def track_user(user, increment_download=False, increment_blocked=False) -> dict:
 
 
 # ==============================================================================
-# 6. القوائم والواجهات التفاعلية (UI Keyboards & Templates)
+# 7. القوائم والواجهات التفاعلية (UI Keyboards & Templates)
 # ==============================================================================
 def get_start_markup(user_id: int):
     markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("🌐 المواقع المدعومة (القائمة الكاملة)", callback_data="show_sites"))
+    markup.add(
+        types.InlineKeyboardButton("🌐 المواقع المدعومة (القائمة الكاملة)", callback_data="show_sites"),
+        types.InlineKeyboardButton("📢 قناة البوت الرسمية", url=FORCE_SUB_URL)
+    )
     if is_admin(user_id):
         markup.add(types.InlineKeyboardButton("🔐 لوحة تحكم الأدمن", callback_data="admin_panel"))
     return markup
@@ -424,12 +478,17 @@ def get_supported_sites_text() -> str:
 
 
 # ==============================================================================
-# 7. معالجات الأوامر والقوائم
+# 8. معالجات الأوامر والقوائم
 # ==============================================================================
 @bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
     admin_states.pop(message.from_user.id, None)
     track_user(message.from_user)
+
+    if not is_user_subscribed(message.from_user.id):
+        send_force_sub_prompt(message.chat.id, message.message_id)
+        return
+
     bot.reply_to(
         message,
         get_welcome_text(),
@@ -441,6 +500,10 @@ def cmd_start(message):
 @bot.message_handler(commands=["sites"])
 def cmd_sites(message):
     track_user(message.from_user)
+    if not is_user_subscribed(message.from_user.id):
+        send_force_sub_prompt(message.chat.id, message.message_id)
+        return
+
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
         types.InlineKeyboardButton("📄 تحميل القائمة الكاملة (+1800 موقع)", callback_data="download_all_sites"),
@@ -462,6 +525,26 @@ def cmd_admin(message):
     )
 
 
+@bot.callback_query_handler(func=lambda call: call.data == "check_sub")
+def handle_check_subscription(call):
+    uid = call.from_user.id
+    if is_user_subscribed(uid):
+        bot.answer_callback_query(call.id, "✅ تم التحقق من اشتراكك بنجاح!")
+        bot.edit_message_text(
+            get_welcome_text(),
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=get_start_markup(uid)
+        )
+    else:
+        bot.answer_callback_query(
+            call.id,
+            "❌ لم تشترك في القناة بعد! اشترك أولاً ثم اضغط تحقق.",
+            show_alert=True
+        )
+
+
 @bot.callback_query_handler(func=lambda call: call.data in {
     "show_sites", "download_all_sites", "back_start", "admin_panel", "admin_stats",
     "admin_users", "admin_blocked", "admin_broadcast", "admin_backup", "cancel_broadcast"
@@ -469,6 +552,10 @@ def cmd_admin(message):
 def handle_menu_callbacks(call):
     uid = call.from_user.id
     data = call.data
+
+    if data in {"show_sites", "download_all_sites"} and not is_user_subscribed(uid):
+        bot.answer_callback_query(call.id, "⚠️ اشترك في القناة أولاً!", show_alert=True)
+        return
 
     if data == "show_sites":
         markup = types.InlineKeyboardMarkup(row_width=1)
@@ -545,7 +632,8 @@ def handle_menu_callbacks(call):
             f"📅 نشطون اليوم: <b>{active_today}</b>\n"
             f"📥 إجمالي التحميلات الناجحة: <b>{total_downloads}</b>\n"
             f"🚫 محاولات تحميل محظورة (NSFW): <b>{blocked_attempts}</b>\n"
-            f"🍪 حالة كوكيز يوتيوب: <b>{cookies_status}</b>"
+            f"🍪 حالة كوكيز يوتيوب: <b>{cookies_status}</b>\n"
+            f"📢 قناة الاشتراك الإجباري: {FORCE_SUB_CHANNEL}"
         )
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 رجوع للوحة التحكم", callback_data="admin_panel"))
@@ -680,10 +768,16 @@ def handle_admin_broadcast_text(message):
 
 
 # ==============================================================================
-# 8. تحليل الروابط وعرض الجودات المتاحة
+# 9. تحليل الروابط وعرض الجودات المتاحة
 # ==============================================================================
 @bot.message_handler(func=lambda m: m.text and m.text.strip().startswith(("http://", "https://")))
 def handle_url(message):
+    track_user(message.from_user)
+
+    if not is_user_subscribed(message.from_user.id):
+        send_force_sub_prompt(message.chat.id, message.message_id)
+        return
+
     url = normalize_url(message.text)
 
     if is_nsfw_url(url):
@@ -691,7 +785,6 @@ def handle_url(message):
         bot.reply_to(message, "🚫 عذراً، هذا الرابط محظور لاحتوائه على محتوى إباحي أو غير لائق.")
         return
 
-    track_user(message.from_user)
     wait_msg = bot.reply_to(message, "🔍 جاري فحص الرابط واستخراج الجودات المتاحة...")
 
     try:
@@ -768,7 +861,7 @@ def handle_url(message):
 
 
 # ==============================================================================
-# 9. تنفيذ التحميل مع شريط التقدم الحي والمسار الاحتياطي للصيغ
+# 10. تنفيذ التحميل مع شريط التقدم الحي والمسار الاحتياطي للصيغ
 # ==============================================================================
 def make_progress_hook(chat_id: int, message_id: int, label: str):
     last_update = [0.0]
@@ -829,7 +922,6 @@ def build_ydl_opts(choice: str, fmt_info: dict, output_template: str, progress_h
             "merge_output_format": "mp4",
         })
     else:
-        # استخدام format_id الدقيق الذي تم استخراجه مسبقاً، مع مسارات احتياطية مرنة
         if fmt_info and fmt_info.get("format_id"):
             fid = fmt_info["format_id"]
             if fmt_info.get("has_audio"):
@@ -849,6 +941,10 @@ def build_ydl_opts(choice: str, fmt_info: dict, output_template: str, progress_h
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("dl|"))
 def process_download(call):
+    if not is_user_subscribed(call.from_user.id):
+        bot.answer_callback_query(call.id, "⚠️ اشترك في القناة أولاً!", show_alert=True)
+        return
+
     _, req_id, choice = call.data.split("|")
 
     with links_lock:
@@ -956,11 +1052,35 @@ def process_download(call):
 
 
 # ==============================================================================
-# 10. نقطة التشغيل الرئيسية
+# 11. حلقة التشغيل المستمر 24/7 مع التعافي التلقائي من الأخطاء
 # ==============================================================================
-if __name__ == "__main__":
+def run_bot_forever():
     init_bot_session()
     cleaner_thread = threading.Thread(target=background_cleaner, daemon=True)
     cleaner_thread.start()
-    logger.info("Bot started successfully (Multi-threaded, Progress Bar, Smart Format ID, Admin Panel).")
-    bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
+
+    retry_delay = 3
+    while not is_shutting_down:
+        try:
+            logger.info("Bot polling started (24/7 Auto-Recovery Active)...")
+            bot.infinity_polling(
+                skip_pending=True,
+                timeout=60,
+                long_polling_timeout=60
+            )
+            if is_shutting_down:
+                break
+        except Exception as e:
+            if is_shutting_down:
+                break
+            logger.error(f"Polling crashed: {e}. Restarting in {retry_delay}s...")
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 30)
+        else:
+            retry_delay = 3
+
+    logger.info("Bot stopped cleanly.")
+
+
+if __name__ == "__main__":
+    run_bot_forever()
