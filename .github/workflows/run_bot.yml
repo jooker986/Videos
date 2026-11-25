@@ -2,7 +2,8 @@ name: Run Telegram Bot 24/7 (2GB Limit)
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    # تشغيل تلقائي كل 5 ساعات لضمان استمرارية العمل 24 ساعة بدون انقطاع
+    - cron: '0 */5 * * *'
   workflow_dispatch:
   push:
     branches:
@@ -41,6 +42,7 @@ jobs:
         run: |
           mkdir -p /tmp/telegram-bot-api-data
           docker run -d --name telegram-bot-api \
+            --restart always \
             -p 8081:8081 \
             -v /tmp/telegram-bot-api-data:/var/lib/telegram-bot-api \
             -e TELEGRAM_API_ID=$API_ID \
@@ -49,6 +51,7 @@ jobs:
             aiogram/telegram-bot-api:latest
 
           docker run -d --name bgutil-provider \
+            --restart always \
             -p 4416:4416 \
             brainicism/bgutil-ytdlp-pot-provider:latest
 
@@ -67,12 +70,20 @@ jobs:
             printf "%s\n" "$YOUTUBE_COOKIES" > cookies.txt
           fi
 
-      - name: 7. Run Bot
+      - name: 7. Run Bot (Auto-Restart Loop)
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           ADMIN_ID: ${{ secrets.ADMIN_ID }}
         run: |
-          timeout -s SIGINT 20400 python bot.py || true
+          # تشغيل البوت لمدة 5 ساعات و40 دقيقة مع إعادة تشغيل فورية إذا توقف لأي سبب
+          END_TIME=$((SECONDS + 20400))
+          while [ $SECONDS -lt $END_TIME ]; do
+            timeout -s SIGINT $((END_TIME - SECONDS)) python bot.py || true
+            if [ $SECONDS -lt $END_TIME ]; then
+              echo "Bot exited unexpectedly, restarting in 3 seconds..."
+              sleep 3
+            fi
+          done
 
       - name: 8. Save User Stats to GitHub
         if: always()
