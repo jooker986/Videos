@@ -2,7 +2,7 @@ name: Run Telegram Bot 24/7 (2GB Limit)
 
 on:
   schedule:
-    # تشغيل تلقائي كل 5 ساعات لضمان استمرارية العمل 24 ساعة بدون انقطاع
+    # خطة احتياطية كل 5 ساعات في حال تعطل التشغيل المتسلسل
     - cron: '0 */5 * * *'
   workflow_dispatch:
   push:
@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: telegram-bot-instance
@@ -70,13 +71,13 @@ jobs:
             printf "%s\n" "$YOUTUBE_COOKIES" > cookies.txt
           fi
 
-      - name: 7. Run Bot (Auto-Restart Loop)
+      - name: 7. Run Bot (5h 30m Auto-Restart Loop)
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           ADMIN_ID: ${{ secrets.ADMIN_ID }}
         run: |
-          # تشغيل البوت لمدة 5 ساعات و40 دقيقة مع إعادة تشغيل فورية إذا توقف لأي سبب
-          END_TIME=$((SECONDS + 20400))
+          # تشغيل البوت لمدة 5 ساعات و30 دقيقة (19800 ثانية)
+          END_TIME=$((SECONDS + 19800))
           while [ $SECONDS -lt $END_TIME ]; do
             timeout -s SIGINT $((END_TIME - SECONDS)) python bot.py || true
             if [ $SECONDS -lt $END_TIME ]; then
@@ -93,3 +94,11 @@ jobs:
           git add users_stats.json
           git diff --staged --quiet || git commit -m "chore: update user stats [skip ci]"
           git push
+
+      - name: 9. Trigger Next 24/7 Session Automatically
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Triggering next bot session seamlessly..."
+          gh workflow run run_bot.yml --ref main
